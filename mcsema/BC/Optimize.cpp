@@ -49,6 +49,7 @@
 #include "remill/BC/ABI.h"
 #include "remill/BC/Compat/TargetLibraryInfo.h"
 #include "remill/BC/DeadStoreEliminator.h"
+#include "remill/BC/StateUnfolder.h"
 #include "remill/BC/Util.h"
 
 #include "mcsema/Arch/Arch.h"
@@ -60,6 +61,8 @@ DEFINE_bool(disable_optimizer, false,
 
 DEFINE_bool(keep_memops, false,
             "Should the memory intrinsics be replaced or not?");
+
+DECLARE_bool(explicit_args);
 
 namespace mcsema {
 namespace {
@@ -349,24 +352,24 @@ void OptimizeModule(void) {
 
   PrivatizeISELs(isels);
 
-  if (!FLAGS_disable_optimizer) {
-    auto bb_func = remill::BasicBlockFunction(gModule);
-    auto slots = remill::StateSlots(gModule);
-    RunO3();
-    remill::RemoveDeadStores(gModule, bb_func, slots);
-  }
+
+  ReplaceBarrier("__remill_barrier_load_load");
+  ReplaceBarrier("__remill_barrier_load_store");
+  ReplaceBarrier("__remill_barrier_store_load");
+  ReplaceBarrier("__remill_barrier_store_store");
+  ReplaceBarrier("__remill_barrier_atomic_begin");
+  ReplaceBarrier("__remill_barrier_atomic_end");
 
   RemoveIntrinsics();
+  LowerMemOps();
 
-  if (!FLAGS_keep_memops) {
-    LowerMemOps();
-    ReplaceBarrier("__remill_barrier_load_load");
-    ReplaceBarrier("__remill_barrier_load_store");
-    ReplaceBarrier("__remill_barrier_store_load");
-    ReplaceBarrier("__remill_barrier_store_store");
-    ReplaceBarrier("__remill_barrier_atomic_begin");
-    ReplaceBarrier("__remill_barrier_atomic_end");
+  RunO3();
+  if (FLAGS_explicit_args) {
+    remill::UnfoldState(gModule, RunO3);
   }
+  //RunO3();
+
+
 
   RemoveUndefFuncCalls();
 }
