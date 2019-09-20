@@ -233,6 +233,8 @@ static llvm::Function *ImplementNativeToLiftedCallback(
     callback_func->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
   }
 
+
+  remill::Annotate<remill::EntrypointFunction>(callback_func);
   return callback_func;
 }
 
@@ -520,6 +522,7 @@ static llvm::Function *ImplementExplicitArgsEntryPoint(
     legacy::AnnotateInsts(func, cfg_func->ea);
   }
 
+  remill::Annotate<remill::EntrypointFunction>(func);
   return func;
 }
 
@@ -636,6 +639,8 @@ static void ImplementExplicitArgsExitPoint(
   loader.StoreReturnValue(block, ir.CreateCall(extern_func, call_args));
 
   ir.CreateRet(remill::LoadMemoryPointer(block));
+
+  remill::Annotate<remill::ExtWrapper>(callback_func);
 }
 
 }  // namespace
