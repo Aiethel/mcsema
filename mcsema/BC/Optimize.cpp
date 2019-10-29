@@ -365,7 +365,7 @@ void OptimizeModule(void) {
 
   RunO3();
   if (FLAGS_explicit_args) {
-    remill::UnfoldState(gModule, RunO3);
+    remill::UnfoldState(gModule);
   }
   //RunO3();
 
