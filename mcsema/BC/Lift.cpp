@@ -83,8 +83,12 @@ static void ExportFunctions(const NativeModule *cfg_module) {
     ep->setLinkage(llvm::GlobalValue::ExternalLinkage);
     ep->setVisibility(llvm::GlobalValue::DefaultVisibility);
 
-    remill::TieFunctions(ep, gModule->getFunction(cfg_func->lifted_name));
-    remill::Annotate<remill::EntrypointFunction>(ep);
+    // TODO: Sometimes externals can appear here, probably as a result
+    //       of partially incorrect cfg recovery.
+    if (!remill::HasOriginType<remill::ExternalFunction>(ep)) {
+      remill::TieFunctions(ep, gModule->getFunction(cfg_func->lifted_name));
+      remill::Annotate<remill::EntrypointFunction>(ep);
+    }
 
   }
 }
