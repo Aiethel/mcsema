@@ -54,6 +54,7 @@
 
 #include "mcsema/Arch/Arch.h"
 #include "mcsema/BC/Optimize.h"
+#include "mcsema/BC/Divinify.h"
 #include "mcsema/BC/Util.h"
 
 DEFINE_bool(disable_optimizer, false,
@@ -365,13 +366,15 @@ void OptimizeModule(void) {
 
   RunO3();
   if (FLAGS_explicit_args) {
-    remill::UnfoldState(gModule);
+    remill::UnfoldState(gModule, false);
   }
-  //RunO3();
+  RunO3();
 
 
 
   RemoveUndefFuncCalls();
+  remill::VerifyModule(gModule);
+  divine::Divinify(*gModule);
 }
 
 }  // namespace mcsema

@@ -88,6 +88,7 @@ add_executable(${MCSEMA_LIFT}
   mcsema/CFG/CFG.cpp
 
   mcsema/BC/Callback.cpp
+  mcsema/BC/Divinify.cpp
   mcsema/BC/External.cpp
   mcsema/BC/Function.cpp
   mcsema/BC/Instruction.cpp
