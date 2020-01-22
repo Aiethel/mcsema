@@ -19,10 +19,11 @@
 
 namespace mcsema {
 struct NativeModule;
+struct DbgMetadata;
 
 void DeclareLiftedFunctions(const NativeModule *cfg_module);
 
-bool DefineLiftedFunctions(const NativeModule *cfg_module);
+bool DefineLiftedFunctions(const NativeModule *cfg_module, DbgMetadata &dbg);
 
 }  // namespace mcsema
 

@@ -49,6 +49,7 @@
 
 #include "mcsema/Arch/Arch.h"
 #include "mcsema/BC/Callback.h"
+#include "mcsema/BC/Dbg.h"
 #include "mcsema/BC/Function.h"
 #include "mcsema/BC/Instruction.h"
 #include "mcsema/BC/Legacy.h"
@@ -59,6 +60,7 @@
 #include "mcsema/CFG/CFG.h"
 
 DECLARE_bool(legacy_mode);
+DECLARE_string(dbg_info);
 
 DEFINE_bool(add_reg_tracer, false,
             "Add a debug function that prints out the register state before "
@@ -358,13 +360,16 @@ static llvm::Function *FindFunction(TranslationContext &ctx,
 // Get the basic block within this function associated with a specific program
 // counter.
 static llvm::BasicBlock *GetOrCreateBlock(TranslationContext &ctx,
-                                          uint64_t pc) {
+                                          uint64_t pc,
+                                          llvm::BasicBlock **inserted=nullptr) {
   auto &block = ctx.ea_to_block[pc];
   if (!block) {
     std::stringstream ss;
     ss << "block_" << std::hex << pc;
     block = llvm::BasicBlock::Create(*gContext, ss.str(), ctx.lifted_func);
-
+    if (inserted) {
+      *inserted = block;
+    }
     // First, try to see if it's actually related to another function. This is
     // equivalent to a tail-call in the original code.
     if (auto tail_called_func = FindFunction(ctx, pc)) {
@@ -665,7 +670,8 @@ static void LiftIndirectJump(TranslationContext &ctx,
 // added to end the block.
 static bool TryLiftTerminator(TranslationContext &ctx,
                               llvm::BasicBlock *block,
-                              remill::Instruction &inst) {
+                              remill::Instruction &inst,
+                              llvm::BasicBlock **inserted=nullptr) {
   switch (inst.category) {
     case remill::Instruction::kCategoryInvalid:
     case remill::Instruction::kCategoryError:
@@ -678,7 +684,7 @@ static bool TryLiftTerminator(TranslationContext &ctx,
 
     case remill::Instruction::kCategoryDirectJump:
       llvm::BranchInst::Create(
-          GetOrCreateBlock(ctx, inst.branch_taken_pc), block);
+          GetOrCreateBlock(ctx, inst.branch_taken_pc, inserted), block);
       return true;
 
     case remill::Instruction::kCategoryIndirectJump:
@@ -741,6 +747,7 @@ static bool TryLiftTerminator(TranslationContext &ctx,
 // Lift a decoded instruction into `block`.
 static bool LiftInstIntoBlock(TranslationContext &ctx,
                               llvm::BasicBlock *block,
+                              DbgMetadata &dbg,
                               bool is_last) {
   remill::Instruction inst;
 
@@ -777,7 +784,8 @@ static bool LiftInstIntoBlock(TranslationContext &ctx,
   ctx.lifter->LiftIntoBlock(inst, block);
 
   auto ret = true;
-  if (TryLiftTerminator(ctx, block, inst)) {
+  llvm::BasicBlock *inserted = nullptr;
+  if (TryLiftTerminator(ctx, block, inst, &inserted)) {
     if (!is_last) {
       LOG(ERROR)
           << "Ending block early at " << std::hex << inst_addr;
@@ -785,6 +793,12 @@ static bool LiftInstIntoBlock(TranslationContext &ctx,
     }
   }
 
+  if (dbg.Is()) {
+    dbg.Annotate(ctx.lifted_func, inst_addr);
+    if (inserted) {
+      dbg.OneBlockAnnotate(ctx.lifted_func, inserted, inst_addr);
+    }
+  }
   // Annotate every un-annotated instruction in this function with the
   // program counter of the current instruction.
   if (FLAGS_legacy_mode) {
@@ -795,7 +809,7 @@ static bool LiftInstIntoBlock(TranslationContext &ctx,
 }
 
 // Lift a decoded block into a function.
-static void LiftBlockIntoFunction(TranslationContext &ctx) {
+static void LiftBlockIntoFunction(TranslationContext &ctx, DbgMetadata &dbg) {
   auto block_pc = ctx.cfg_block->ea;
   auto block = ctx.ea_to_block[block_pc];
 
@@ -804,11 +818,12 @@ static void LiftBlockIntoFunction(TranslationContext &ctx) {
   // Lift each instruction into the block.
   size_t i = 0;
   const auto num_insts = ctx.cfg_block->instructions.size();
+  dbg._ctx.SetBlock(block);
   for (auto &cfg_inst : ctx.cfg_block->instructions) {
     ctx.cfg_inst = cfg_inst.get();
     auto is_last = (++i) >= num_insts;
 
-    if (!LiftInstIntoBlock(ctx, block, is_last)) {
+    if (!LiftInstIntoBlock(ctx, block, dbg, is_last)) {
       return;
     }
 
@@ -887,7 +902,9 @@ static void AllocStackVars(llvm::BasicBlock *bb,
 }
 
 static llvm::Function *LiftFunction(
-    const NativeModule *cfg_module, const NativeFunction *cfg_func) {
+    const NativeModule *cfg_module,
+    const NativeFunction *cfg_func,
+    DbgMetadata &dbg) {
 
   CHECK(!cfg_func->is_external)
       << "Should not lift external function " << cfg_func->name;
@@ -965,11 +982,17 @@ static llvm::Function *LiftFunction(
 
   llvm::BranchInst::Create(ctx.ea_to_block[cfg_func->ea],
                            &(lifted_func->front()));
+  remill::Annotate<remill::LiftedFunction>(lifted_func);
+
+  if (dbg.Is())
+    lifted_func->setSubprogram(dbg.CreateDummyProgram(lifted_func));
+  dbg.SetCtx(ctx.lifted_func);
 
   for (auto &block_info : cfg_func->blocks) {
     ctx.cfg_block = block_info.second.get();
-    LiftBlockIntoFunction(ctx);
+    LiftBlockIntoFunction(ctx, dbg);
   }
+
 
   // Check the sanity of things.
   for (auto block_info : ctx.ea_to_block) {
@@ -979,7 +1002,6 @@ static llvm::Function *LiftFunction(
         << " has no terminator!" << std::dec;
   }
 
-  remill::Annotate<remill::LiftedFunction>(lifted_func);
 
   return lifted_func;
 }
@@ -1017,7 +1039,7 @@ void DeclareLiftedFunctions(const NativeModule *cfg_module) {
 // Lift the blocks and instructions into the function. Some minor optimization
 // passes are applied to clean out any unneeded register variables brought
 // in from cloning the `__remill_basic_block` function.
-bool DefineLiftedFunctions(const NativeModule *cfg_module) {
+bool DefineLiftedFunctions(const NativeModule *cfg_module, DbgMetadata &dbg) {
   llvm::legacy::FunctionPassManager func_pass_manager(gModule);
   func_pass_manager.add(llvm::createCFGSimplificationPass());
   func_pass_manager.add(llvm::createPromoteMemoryToRegisterPass());
@@ -1033,7 +1055,9 @@ bool DefineLiftedFunctions(const NativeModule *cfg_module) {
       continue;
     }
 
-    auto lifted_func = LiftFunction(cfg_module, cfg_func);
+
+    auto lifted_func = LiftFunction(cfg_module, cfg_func, dbg);
+
     if (!lifted_func) {
       LOG(ERROR)
           << "Could lift function: " << cfg_func->name << " at "
@@ -1041,6 +1065,7 @@ bool DefineLiftedFunctions(const NativeModule *cfg_module) {
           << std::dec;
       return false;
     }
+    dbg.FillFunc(*lifted_func);
     func_pass_manager.run(*lifted_func);
   }
 

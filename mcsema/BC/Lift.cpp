@@ -52,6 +52,7 @@
 
 #include "mcsema/Arch/Arch.h"
 #include "mcsema/BC/Callback.h"
+#include "mcsema/BC/Dbg.h"
 #include "mcsema/BC/External.h"
 #include "mcsema/BC/Function.h"
 #include "mcsema/BC/Legacy.h"
@@ -64,6 +65,8 @@
 DECLARE_bool(legacy_mode);
 DECLARE_bool(explicit_args);
 DECLARE_string(pc_annotation);
+DECLARE_string(dbg_info);
+
 
 namespace mcsema {
 namespace {
@@ -183,8 +186,11 @@ bool LiftCodeIntoModule(const NativeModule *cfg_module) {
 
   auto lifted_func_type = remill::LiftedFunctionType(gModule);
 
+  DbgMetadata dbg {*gModule};
+  dbg.Parse(FLAGS_dbg_info);
+
   // Lift the blocks of instructions into the declared functions.
-  if (!DefineLiftedFunctions(cfg_module)) {
+  if (!DefineLiftedFunctions(cfg_module, dbg)) {
     return false;
   }
 
@@ -202,6 +208,7 @@ bool LiftCodeIntoModule(const NativeModule *cfg_module) {
     legacy::DowngradeModule();
   }
 
+  dbg.Petrify();
   OptimizeModule();
 
   if (FLAGS_explicit_args) {
@@ -209,6 +216,8 @@ bool LiftCodeIntoModule(const NativeModule *cfg_module) {
     DefineDebugGetRegState();
     DefineErrorIntrinsics(lifted_func_type);
   }
+
+  dbg.FillMissing(*gModule);
 
   if (!FLAGS_pc_annotation.empty()) {
     legacy::PropagateInstAnnotations();
